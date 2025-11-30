@@ -18,11 +18,11 @@ const suggestions = computed<SuggestedQuery[]>(() => {
 
     if (userRole.value === 'student') {
         return [
-            { icon: '👤', text: 'My attendance', query: 'Show my attendance record for this month' },
-            { icon: '📝', text: 'My absences', query: 'How many times have I been absent this month?' },
-            { icon: '⏰', text: 'Late arrivals', query: 'How many times was I late this month?' },
+            { icon: '📚', text: 'Upcoming Classes', query: 'list all my upcoming classes for today' },
+            { icon: '📝', text: 'My absences', query: 'How many times have I been absent?' },
+            { icon: '⏰', text: 'Late arrivals', query: 'How many times was I late?' },
             { icon: '📋', text: 'Excuse requests', query: 'Do I have any pending excuse requests?' },
-            { icon: '📚', text: 'My classes', query: 'List all my classes, subject, time, day, and room' },
+            { icon: '📚', text: 'All classes', query: 'List all my classes, subject, time, day, and room' },
         ];
     }
 
@@ -30,7 +30,7 @@ const suggestions = computed<SuggestedQuery[]>(() => {
         return [
             ...baseQueries,
             { icon: '👥', text: 'Class attendance', query: 'How many students were present today?' },
-            { icon: '⚠️', text: 'Student excuse request', query: 'Do i have any pending excuse request?' },
+            { icon: '📚', text: 'Upcoming Classes', query: 'list all my upcoming classes for today' },
             { icon: '🔍', text: 'Attendance rate', query: "What is the attendance rate for all my classes?" },
             { icon: '📚', text: 'List all classes', query: 'List all my classes, subject, time, day, and room' },
         ];

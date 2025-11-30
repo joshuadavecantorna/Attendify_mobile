@@ -25,7 +25,7 @@ class AIComposer
 
         $prompt = <<<PROMPT
 # SYSTEM ROLE
-You are "Attendify Bot", a friendly and helpful AI assistant for the AttendUSM attendance management system.
+You are "Attendify Bot", a friendly and helpful AI assistant for Attendify.
 
 # USER CONTEXT
 - Name: {$userName}

@@ -2,17 +2,16 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\UserContextBuilder;
+use App\Services\RetrievalPlanner;
+use App\Services\AIComposer;
+use App\Services\OllamaService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Inertia\Inertia;
 use Inertia\Response;
-use App\Services\UserContextBuilder;
-use App\Services\RetrievalPlanner;
-use App\Services\AIComposer;
-use App\Services\OllamaService;
-use App\Services\AIQueryService;
 
 class ChatbotController extends Controller
 {
@@ -20,38 +19,37 @@ class ChatbotController extends Controller
     protected RetrievalPlanner $retrievalPlanner;
     protected AIComposer $composer;
     protected OllamaService $ollamaService;
-    protected AIQueryService $aiQueryService;
 
     public function __construct(
         UserContextBuilder $contextBuilder,
         RetrievalPlanner $retrievalPlanner,
         AIComposer $composer,
-        OllamaService $ollamaService,
-        AIQueryService $aiQueryService
+        OllamaService $ollamaService
     ) {
         $this->contextBuilder = $contextBuilder;
         $this->retrievalPlanner = $retrievalPlanner;
         $this->composer = $composer;
         $this->ollamaService = $ollamaService;
-        $this->aiQueryService = $aiQueryService;
     }
 
     /**
-     * Return AI service health status.
+     * AI service health check
      */
     public function status()
     {
         try {
             $health = $this->ollamaService->healthCheck();
-            return response()->json(['ai' => $health], 200);
+            return response()->json(['ai' => $health], $health['ok'] ? 200 : 503);
         } catch (\Exception $e) {
             Log::error('ChatbotController::status error', ['error' => $e->getMessage()]);
-            return response()->json(['ai' => ['ok' => false, 'error' => 'health check failed']], 503);
+            return response()->json([
+                'ai' => ['ok' => false, 'error' => 'Health check failed']
+            ], 503);
         }
     }
 
     /**
-     * Display the chatbot view.
+     * Chatbot view (Inertia)
      */
     public function index(): Response
     {
@@ -59,7 +57,7 @@ class ChatbotController extends Controller
     }
 
     /**
-     * Handle a user query and return a standard response using the Hybrid AI pipeline.
+     * Handle synchronous chat query
      */
     public function queryRequest(Request $request)
     {
@@ -69,148 +67,86 @@ class ChatbotController extends Controller
 
         $user = Auth::user();
         if (!$user) {
-            return response()->json(['error' => 'Unauthenticated.'], 401);
+            return response()->json(['error' => 'Authentication required.'], 401);
         }
 
-        $userQuery = $request->input('message');
+        $userQuery = trim($request->input('message'));
 
         try {
-            // 1. Static cached user context
+            // 1. Build cached user context (15-minute cache)
             $cachedContext = $this->contextBuilder->build($user->id);
 
-            // Validate access: ensure role-derived identifiers exist
-            if (($cachedContext['role'] ?? null) === 'student' && empty($cachedContext['student_id'])) {
-                return response()->json(['error' => 'Student context missing or access denied.'], 403);
-            }
-            if (($cachedContext['role'] ?? null) === 'teacher' && empty($cachedContext['teacher_id'])) {
-                return response()->json(['error' => 'Teacher context missing or access denied.'], 403);
-            }
+            // 2. Validate role-based access
+            $this->validateUserAccess($cachedContext);
 
-            // 2. Dynamic retrieval plan + results
+            // 3. Plan and execute dynamic data retrieval
             $retrieval = $this->retrievalPlanner->planAndExecute($userQuery, $cachedContext);
 
-            // 3. Compose final prompt for the AI model
+            // 4. Check if we have actionable results
+            if (isset($retrieval['results']['error'])) {
+                // Retrieval failed - return a simple error message
+                return response()->json([
+                    'reply' => "I'm sorry, I couldn't retrieve the information you requested. Please try rephrasing your question or try again later.",
+                    'retrieval' => null,
+                    'fallback' => true,
+                ]);
+            }
+
+            // 5. Compose full prompt with retrieval results
             $prompt = $this->composer->compose($cachedContext, $retrieval, $userQuery);
 
-            // 4. Send to Ollama synchronously and return response
-            $resp = $this->ollamaService->generate($prompt, false);
+            // 6. Generate AI response
+            $output = $this->ollamaService->generate($prompt, false);
 
-            // Normalize response to string
-            $output = null;
-            if (is_array($resp)) {
-                $parts = array_map(function ($p) {
-                    if (is_array($p) && isset($p['response'])) return $p['response'];
-                    if (is_string($p)) return $p;
-                    return json_encode($p);
-                }, $resp);
-                $output = implode('', $parts);
-            } elseif (is_string($resp)) {
-                $output = $resp;
-            } elseif (is_object($resp) && method_exists($resp, '__toString')) {
-                $output = (string) $resp;
-            } else {
-                $output = json_encode($resp);
-            }
-
-            // If the model returned raw JSON, code, or numeric sequences, prefer to render
-            // a friendly natural-language response using the retrieval results or by asking
-            // the model to rephrase into plain cheerful English.
-            $decoded = json_decode($output, true);
-            $looksStructured = (json_last_error() === JSON_ERROR_NONE && $decoded !== null);
-            // Detect outputs that are purely numeric sequences or simple JSON-like arrays/objects
-            $looksNumericSequence = preg_match('/^[0-9,\s\[\]\{\}\":]+$/', trim($output));
-            $containsCodeFence = (stripos($output, '```') !== false) || (strpos($output, '`') !== false && preg_match('/`[^`]+`/', $output));
-            $containsJsonLike = (strpos($output, '{') !== false && strpos($output, '}') !== false) || (strpos($output, '[') !== false && strpos($output, ']') !== false);
-
-            if ($looksStructured || $looksNumericSequence || $containsCodeFence || $containsJsonLike) {
-                // Map retrieval intent to a reasonable query type for formatting
-                $intent = $retrieval['intent'] ?? 'general';
-                switch ($intent) {
-                    case 'attendance':
-                        $qType = 'summary';
-                        break;
-                    case 'schedule':
-                        $qType = 'list_details';
-                        break;
-                    case 'teacher':
-                        $qType = 'list_details';
-                        break;
-                    case 'subjects':
-                        $qType = 'list_all';
-                        break;
-                    default:
-                        $qType = 'fallback';
-                        break;
-                }
-
-                try {
-                    $friendly = $this->ollamaService->formatResponse($intent, $qType, $retrieval['results'] ?? $decoded, $userQuery);
-                    if (!empty($friendly)) {
-                        $output = $friendly;
-                    }
-                } catch (\Exception $e) {
-                    Log::warning('Failed to format structured response: ' . $e->getMessage());
-                }
-            }
-
-            // If output still looks technical (contains backticks, JSON-like braces, or code fences), ask the model
-            // to rephrase into cheerful plain-language before returning to the user.
-            $stillLooksTechnical = (stripos($output, '```') !== false)
-                || preg_match('/\{\s*"[a-z0-9_]+"\s*:\s*/i', $output)
-                || preg_match('/^\s*\[\s*[0-9\s,]+\s*\]/', trim($output));
-
-            if ($stillLooksTechnical) {
-                try {
-                    $rewritten = $this->ollamaService->generateGenericResponse($userQuery, $output);
-                    if (!empty($rewritten)) {
-                        $output = $rewritten;
-                    }
-                } catch (\Exception $e) {
-                    Log::warning('Failed to rephrase technical output: ' . $e->getMessage());
-                }
+            // 7. Handle null response from AI
+            if ($output === null || trim($output) === '') {
+                return response()->json([
+                    'reply' => "I'm having trouble generating a response right now. Please try again.",
+                    'retrieval' => $retrieval['plan'] ?? null,
+                ]);
             }
 
             return response()->json([
                 'reply' => $output,
                 'retrieval' => $retrieval['plan'] ?? null,
+                'intent' => $retrieval['intent'] ?? 'general',
             ]);
+
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['error' => $e->errors()], 422);
         } catch (\Exception $e) {
-            Log::error('ChatbotController::queryRequest error', ['error' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
-            return response()->json(['error' => 'Internal server error'], 500);
+            Log::error('ChatbotController::queryRequest error', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'user_id' => $user->id ?? null,
+            ]);
+            
+            return response()->json([
+                'error' => 'An unexpected error occurred. Please try again.',
+                'debug' => app()->environment('local') ? $e->getMessage() : null,
+            ], 500);
         }
     }
 
-
     /**
-     * Handle a user query and stream the response using the Hybrid AI pipeline.
+     * Handle streaming chat query
      */
     public function streamChat(Request $request)
     {
         set_time_limit(120);
-
+        
         $request->validate(['query' => 'required|string|max:2000']);
 
         $user = Auth::user();
         if (!$user) {
-            return response()->json(['error' => 'Unauthenticated.'], 401);
+            return response()->json(['error' => 'Authentication required.'], 401);
         }
 
-        $userQuery = $request->input('query');
+        $userQuery = trim($request->input('query'));
 
         try {
             $cachedContext = $this->contextBuilder->build($user->id);
-
-            // Validate access before streaming
-            if (($cachedContext['role'] ?? null) === 'student' && empty($cachedContext['student_id'])) {
-                return new StreamedResponse(function () {
-                    echo json_encode(['error' => 'Student context missing or access denied.']);
-                });
-            }
-            if (($cachedContext['role'] ?? null) === 'teacher' && empty($cachedContext['teacher_id'])) {
-                return new StreamedResponse(function () {
-                    echo json_encode(['error' => 'Teacher context missing or access denied.']);
-                });
-            }
+            $this->validateUserAccess($cachedContext);
 
             $retrieval = $this->retrievalPlanner->planAndExecute($userQuery, $cachedContext);
             $prompt = $this->composer->compose($cachedContext, $retrieval, $userQuery);
@@ -223,70 +159,53 @@ class ChatbotController extends Controller
                     foreach ($generator as $chunk) {
                         $out = is_string($chunk) ? $chunk : json_encode($chunk);
                         echo $out;
-                        @ob_flush();
+                        if (ob_get_level() > 0) {
+                            @ob_flush();
+                        }
                         @flush();
                     }
                 } catch (\Throwable $e) {
-                    Log::error('ChatbotController::streamChat iteration error', ['error' => $e->getMessage()]);
-                    echo json_encode(['error' => 'Streaming failed.']);
+                    Log::error('ChatbotController::streamChat iteration error', [
+                        'error' => $e->getMessage()
+                    ]);
+                    echo json_encode(['error' => 'Streaming interrupted.']);
                 }
             });
 
             $response->headers->set('Content-Type', 'text/event-stream');
             $response->headers->set('Cache-Control', 'no-cache');
             $response->headers->set('X-Accel-Buffering', 'no');
-
+            
             return $response;
+
         } catch (\Exception $e) {
-            Log::error('ChatbotController::streamChat error', ['error' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
-            return new StreamedResponse(function () {
-                echo json_encode(['error' => 'Internal server error']);
+            Log::error('ChatbotController::streamChat error', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            
+            return new StreamedResponse(function () use ($e) {
+                echo json_encode([
+                    'error' => 'Streaming failed.',
+                    'debug' => app()->environment('local') ? $e->getMessage() : null,
+                ]);
             });
         }
     }
 
-    private function sendStreamChunk(string $chunk)
+    /**
+     * Validate that user has proper access based on role
+     */
+    private function validateUserAccess(array $context): void
     {
-        echo "data: " . json_encode(['response' => $chunk]) . "\n\n";
-    }
+        $role = $context['role'] ?? null;
 
-    private function executeParameterizedQuery(string $sql, array $bindings = []): array
-    {
-        $pdo = \Illuminate\Support\Facades\DB::getPdo();
-        try {
-            $stmt = $pdo->prepare($sql);
-
-            // PDO expects parameter array keys without leading colon
-            $params = [];
-            foreach ($bindings as $k => $v) {
-                $name = ltrim($k, ':');
-                $params[$name] = $v;
-            }
-
-            $stmt->execute($params);
-            $results = $stmt->fetchAll(\PDO::FETCH_OBJ);
-            return $results ?: [];
-        } catch (\Exception $e) {
-            Log::error('Query execution failed: ' . $e->getMessage(), ['sql' => $sql]);
-            return [];
-        }
-    }
-
-    private function _getUserContext(): array
-    {
-        $user = Auth::user();
-        $context = [
-            'user_id' => $user->id,
-            'user_name' => $user->name,
-            'user_role' => $user->role,
-        ];
-
-        if ($user->role === 'student' && $user->student) {
-            $context['student_id'] = $user->student->id;
-        } elseif ($user->role === 'teacher' && $user->teacher) {
-            $context['teacher_id'] = $user->teacher->id;
+        if ($role === 'student' && empty($context['student_id'])) {
+            throw new \RuntimeException('Student context missing or access denied.');
         }
 
-        return $context;
+        if ($role === 'teacher' && empty($context['teacher_id'])) {
+            throw new \RuntimeException('Teacher context missing or access denied.');
+        }
     }
 }

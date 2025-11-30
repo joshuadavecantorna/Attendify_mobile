@@ -9,221 +9,411 @@ use App\Models\ClassModel;
 use App\Models\AttendanceRecord;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class UserContextBuilder
 {
     /**
-     * Build a normalized user context and cache it for 5 minutes.
-     *
+     * Build and cache user context for 15 minutes
+     * 
      * @param int $userId
      * @return array
      */
     public function build(int $userId): array
     {
-        $cacheKey = "context_{$userId}";
+        $cacheKey = "user_context:{$userId}";
+        $cacheDuration = now()->addMinutes(15); // Extended from 5 to 15 minutes
 
-        // Use Cache::remember to ensure consistent caching behavior
-        return Cache::remember($cacheKey, 300, function () use ($userId) {
-            $user = User::find($userId);
-            if (!$user) {
-                return [];
+        return Cache::remember($cacheKey, $cacheDuration, function () use ($userId) {
+            return $this->buildFresh($userId);
+        });
+    }
+
+    /**
+     * Force rebuild context without cache
+     * 
+     * @param int $userId
+     * @return array
+     */
+    public function rebuild(int $userId): array
+    {
+        $cacheKey = "user_context:{$userId}";
+        Cache::forget($cacheKey);
+        return $this->build($userId);
+    }
+
+    /**
+     * Clear context cache for a user
+     * 
+     * @param int $userId
+     * @return void
+     */
+    public function clearCache(int $userId): void
+    {
+        $cacheKey = "user_context:{$userId}";
+        Cache::forget($cacheKey);
+    }
+
+    /**
+     * Build fresh context from database
+     * 
+     * @param int $userId
+     * @return array
+     */
+    private function buildFresh(int $userId): array
+    {
+        try {
+            $user = User::findOrFail($userId);
+            
+            // Determine user role
+            $role = $this->determineUserRole($user);
+
+            // Base user info
+            $context = [
+                'user' => $this->buildUserInfo($user),
+                'role' => $role,
+            ];
+
+            // Add role-specific context
+            switch ($role) {
+                case 'student':
+                    $context = array_merge($context, $this->buildStudentContext($user));
+                    break;
+                    
+                case 'teacher':
+                    $context = array_merge($context, $this->buildTeacherContext($user));
+                    break;
+                    
+                case 'admin':
+                    $context = array_merge($context, $this->buildAdminContext($user));
+                    break;
             }
 
-            // Determine role by presence in tables: teachers / students / admins
-            $teacherRecord = Teacher::where('user_id', $userId)->first();
-            $studentRecord = Student::where('user_id', $userId)->first();
+            return $context;
 
-            $adminRecord = null;
-            if (Schema::hasTable('admins') && Schema::hasColumn('admins', 'user_id')) {
-                $adminRecord = DB::table('admins')->where('user_id', $userId)->first();
-            }
+        } catch (\Exception $e) {
+            Log::error('UserContextBuilder::buildFresh error', [
+                'user_id' => $userId,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
 
-            if ($teacherRecord) {
-                $role = 'teacher';
-            } elseif ($studentRecord) {
-                $role = 'student';
-            } elseif ($adminRecord) {
-                $role = 'admin';
-            } else {
-                $role = $user->role ?? 'admin';
-            }
+            // Return minimal fallback context
+            return [
+                'user' => ['id' => $userId, 'name' => 'User', 'role' => 'unknown'],
+                'role' => 'unknown',
+                'error' => 'Failed to load user context',
+            ];
+        }
+    }
 
-        // Base user info (only include columns that exist)
-        $userInfo = [
+    /**
+     * Determine user role from relationships
+     * 
+     * @param User $user
+     * @return string
+     */
+    private function determineUserRole(User $user): string
+    {
+        // Check explicit relationships first
+        if ($user->teacher()->exists()) {
+            return 'teacher';
+        }
+        
+        if ($user->student()->exists()) {
+            return 'student';
+        }
+        
+        // Check admin table if it exists
+        if ($this->isAdmin($user)) {
+            return 'admin';
+        }
+        
+        // Fallback to user role column
+        return $user->role ?? 'user';
+    }
+
+    /**
+     * Check if user is admin
+     * 
+     * @param User $user
+     * @return bool
+     */
+    private function isAdmin(User $user): bool
+    {
+        // Check user role column first
+        if ($user->role === 'admin') {
+            return true;
+        }
+
+        // Check admins table if it exists
+        if (!Schema::hasTable('admins')) {
+            return false;
+        }
+
+        return DB::table('admins')->where('user_id', $user->id)->exists();
+    }
+
+    /**
+     * Build base user information
+     * 
+     * @param User $user
+     * @return array
+     */
+    private function buildUserInfo(User $user): array
+    {
+        $info = [
             'id' => $user->id,
             'name' => $user->name,
             'email' => $user->email,
-            'role' => $role,
+            'role' => $user->role,
         ];
 
-        if (Schema::hasColumn('users', 'student_id')) {
-            $userInfo['student_id'] = $user->student_id;
-        }
-        if (Schema::hasColumn('users', 'class_code')) {
-            $userInfo['class_code'] = $user->class_code;
-        }
-        if (Schema::hasColumn('users', 'telegram_chat_id')) {
-            $userInfo['telegram_chat_id'] = $user->telegram_chat_id;
-            $userInfo['telegram_username'] = $user->telegram_username ?? null;
-            $userInfo['notifications_enabled'] = $user->notifications_enabled ?? false;
-        }
-
-        $context = [
-            'user' => $userInfo,
-            'role' => $role,
+        // Optional fields (check if column exists before accessing)
+        $optionalFields = [
+            'student_id', 
+            'class_code', 
+            'telegram_chat_id', 
+            'telegram_username', 
+            'notifications_enabled'
         ];
-
-        // Student-specific context
-        if ($role === 'student' && $studentRecord) {
-            $student = $studentRecord->toArray();
-
-            // Only keep known keys from migrations / model fillable
-            $studentContext = array_intersect_key($student, array_flip([
-                'id','student_id','name','email','class_id','phone','year','course','section','avatar','qr_data','is_active'
-            ]));
-
-            // Load enrolled classes via pivot (limit to recent 6 for UI)
-            // Qualify columns with the related table name to avoid ambiguous column errors
-            $classes = $studentRecord->classes()->select([
-                'class_models.id as id',
-                'class_models.name',
-                'class_models.class_code',
-                'class_models.course',
-                'class_models.section',
-                'class_models.subject',
-                'class_models.schedule_time',
-                'class_models.schedule_days',
-                'class_models.room',
-                'class_models.academic_year',
-                'class_models.semester',
-                'class_models.teacher_id'
-            ])->limit(6)->get();
-
-            // Recent attendance records (limit 20)
-            $attendance = AttendanceRecord::where('student_id', $studentRecord->id)
-                ->select(['id','attendance_session_id','status','marked_at','marked_by','notes','created_at'])
-                ->orderBy('marked_at', 'desc')
-                ->limit(8)
-                ->get();
-
-            // Recent excuse requests for dashboard (limit 5)
-            $recentRequests = [];
-            try {
-                if (class_exists(\App\Models\ExcuseRequest::class)) {
-                    $recentRequests = \App\Models\ExcuseRequest::where('student_id', $studentRecord->id)
-                        ->select(['id','attendance_session_id','reason','status','created_at'])
-                        ->orderBy('created_at','desc')
-                        ->limit(5)
-                        ->get()
-                        ->map(function($r){
-                            return [
-                                'id' => $r->id,
-                                'status' => $r->status,
-                                'reason' => is_string($r->reason) ? mb_substr($r->reason,0,200) : null,
-                                'created_at' => $r->created_at,
-                            ];
-                        })->toArray();
-                }
-            } catch (\Exception $e) {
-                Log::warning('Failed to load recent excuse requests for UI context: '.$e->getMessage());
+        
+        foreach ($optionalFields as $field) {
+            if (Schema::hasColumn('users', $field) && isset($user->$field)) {
+                $info[$field] = $user->$field;
             }
-
-            // Normalize schedule_days (sometimes JSON string) and reduce fields
-            $studentContext['classes'] = array_map(function($c){
-                // If schedule_days is JSON string, try decode
-                if (isset($c['schedule_days']) && is_string($c['schedule_days'])) {
-                    $decoded = json_decode($c['schedule_days'], true);
-                    $c['schedule_days'] = is_array($decoded) ? $decoded : [$c['schedule_days']];
-                }
-                // Keep only UI-relevant keys
-                return [
-                    'id' => $c['id'] ?? null,
-                    'name' => $c['name'] ?? null,
-                    'class_code' => $c['class_code'] ?? null,
-                    'course' => $c['course'] ?? null,
-                    'section' => $c['section'] ?? null,
-                    'subject' => $c['subject'] ?? null,
-                    'schedule_time' => $c['schedule_time'] ?? null,
-                    'schedule_days' => $c['schedule_days'] ?? [],
-                    'room' => $c['room'] ?? null,
-                ];
-            }, $classes->toArray());
-
-            $studentContext['recent_attendance'] = array_map(function($r){
-                return [
-                    'id' => $r['id'] ?? null,
-                    'attendance_session_id' => $r['attendance_session_id'] ?? null,
-                    'status' => $r['status'] ?? null,
-                    'marked_at' => $r['marked_at'] ?? $r['created_at'] ?? null,
-                ];
-            }, $attendance->toArray());
-            $studentContext['recent_requests'] = $recentRequests;
-
-            // Basic stats for UI (counts)
-            $studentContext['stats'] = [
-                'totalClasses' => count($studentContext['classes']),
-                'recentAttendanceCount' => count($studentContext['recent_attendance']),
-            ];
-
-            $context['student'] = $studentContext;
-            $context['student_id'] = $studentRecord->id;
         }
 
-        // Teacher-specific context
-        if ($role === 'teacher' && $teacherRecord) {
-            $teacher = $teacherRecord->toArray();
+        return $info;
+    }
 
-            $teacherContext = array_intersect_key($teacher, array_flip([
-                'id','user_id','teacher_id','first_name','last_name','middle_name','email','phone','department','position','salary','profile_picture','is_active'
-            ]));
-
-
-            // Classes taught by this teacher (class_models.teacher_id stores users.id)
-            $classes = ClassModel::where('teacher_id', $teacherRecord->user_id)
-                ->select(['id','name','class_code','course','section','subject','schedule_time','schedule_days','room','academic_year','semester','is_active'])
-                ->limit(12)
-                ->get();
-
-            $teacherContext['classes'] = array_map(function($c){
-                $arr = (array)$c;
-                if (isset($arr['schedule_days']) && is_string($arr['schedule_days'])) {
-                    $decoded = json_decode($arr['schedule_days'], true);
-                    $arr['schedule_days'] = is_array($decoded) ? $decoded : [$arr['schedule_days']];
-                }
-                return [
-                    'id' => $arr['id'] ?? null,
-                    'name' => $arr['name'] ?? null,
-                    'class_code' => $arr['class_code'] ?? null,
-                    'course' => $arr['course'] ?? null,
-                    'section' => $arr['section'] ?? null,
-                    'subject' => $arr['subject'] ?? null,
-                    'schedule_time' => $arr['schedule_time'] ?? null,
-                    'schedule_days' => $arr['schedule_days'] ?? [],
-                    'room' => $arr['room'] ?? null,
-                ];
-            }, $classes->toArray());
-
-            // Teacher stats
-            $teacherContext['stats'] = [
-                'classesCount' => count($teacherContext['classes']),
-            ];
-
-            $context['teacher'] = $teacherContext;
-            $context['teacher_id'] = $teacherRecord->id;
+    /**
+     * Build student-specific context
+     * 
+     * @param User $user
+     * @return array
+     */
+    private function buildStudentContext(User $user): array
+    {
+        $studentRecord = Student::where('user_id', $user->id)->first();
+        
+        if (!$studentRecord) {
+            return ['student' => null, 'student_id' => null];
         }
 
-        // Admins or fallback: include basic summary info
-        if ($role === 'admin') {
-            $context['admin'] = [
+        // Eager load classes relationship with optimized query
+        $studentRecord->load([
+            'classes' => function ($query) {
+                $query->select([
+                    'class_models.id',
+                    'class_models.name',
+                    'class_models.class_code',
+                    'class_models.course',
+                    'class_models.section',
+                    'class_models.subject',
+                    'class_models.schedule_time',
+                    'class_models.schedule_days',
+                    'class_models.room',
+                    'class_models.academic_year',
+                    'class_models.semester',
+                ])
+                ->where('class_student.status', 'enrolled')
+                ->limit(10);
+            }
+        ]);
+
+        // Recent attendance (last 10 records)
+        $recentAttendance = AttendanceRecord::where('student_id', $studentRecord->id)
+            ->select(['id', 'attendance_session_id', 'status', 'marked_at', 'notes', 'method'])
+            ->orderBy('marked_at', 'desc')
+            ->limit(10)
+            ->get()
+            ->map(fn($r) => [
+                'id' => $r->id,
+                'status' => $r->status,
+                'marked_at' => $r->marked_at,
+                'method' => $r->method ?? 'manual',
+            ])
+            ->toArray();
+
+        // Recent excuse requests
+        $recentRequests = $this->loadRecentExcuseRequests($studentRecord->id);
+
+        // Format classes
+        $classes = $studentRecord->classes->map(function ($c) {
+            return [
+                'id' => $c->id,
+                'name' => $c->name,
+                'class_code' => $c->class_code,
+                'course' => $c->course,
+                'section' => $c->section,
+                'subject' => $c->subject,
+                'schedule_time' => $c->schedule_time,
+                'schedule_days' => $this->parseScheduleDays($c->schedule_days),
+                'room' => $c->room,
+                'academic_year' => $c->academic_year,
+                'semester' => $c->semester,
+            ];
+        })->toArray();
+
+        $studentContext = [
+            'id' => $studentRecord->id,
+            'name' => $studentRecord->name,
+            'student_id' => $studentRecord->student_id,
+            'email' => $studentRecord->email,
+            'year' => $studentRecord->year,
+            'course' => $studentRecord->course,
+            'section' => $studentRecord->section,
+            'phone' => $studentRecord->phone ?? null,
+            'classes' => $classes,
+            'recent_attendance' => $recentAttendance,
+            'recent_requests' => $recentRequests,
+            'stats' => [
+                'total_classes' => count($classes),
+                'recent_attendance_count' => count($recentAttendance),
+                'pending_requests' => collect($recentRequests)->where('status', 'pending')->count(),
+            ],
+        ];
+
+        return [
+            'student' => $studentContext,
+            'student_id' => $studentRecord->id,
+        ];
+    }
+
+    /**
+     * Build teacher-specific context
+     * 
+     * @param User $user
+     * @return array
+     */
+    private function buildTeacherContext(User $user): array
+    {
+        $teacherRecord = Teacher::where('user_id', $user->id)->first();
+        
+        if (!$teacherRecord) {
+            return ['teacher' => null, 'teacher_id' => null];
+        }
+
+        // Classes taught by this teacher (teacher_id in class_models references users.id)
+        $classes = ClassModel::where('teacher_id', $teacherRecord->user_id)
+            ->select([
+                'id', 'name', 'class_code', 'course', 'section', 
+                'subject', 'schedule_time', 'schedule_days', 'room',
+                'academic_year', 'semester', 'is_active'
+            ])
+            ->where('is_active', true)
+            ->orderBy('schedule_time')
+            ->limit(15)
+            ->get()
+            ->map(fn($c) => [
+                'id' => $c->id,
+                'name' => $c->name,
+                'class_code' => $c->class_code,
+                'course' => $c->course,
+                'section' => $c->section,
+                'subject' => $c->subject,
+                'schedule_time' => $c->schedule_time,
+                'schedule_days' => $this->parseScheduleDays($c->schedule_days),
+                'room' => $c->room,
+                'academic_year' => $c->academic_year,
+                'semester' => $c->semester,
+            ])
+            ->toArray();
+
+        $teacherContext = [
+            'id' => $teacherRecord->id,
+            'user_id' => $teacherRecord->user_id,
+            'teacher_id' => $teacherRecord->teacher_id,
+            'first_name' => $teacherRecord->first_name,
+            'last_name' => $teacherRecord->last_name,
+            'email' => $teacherRecord->email,
+            'phone' => $teacherRecord->phone,
+            'department' => $teacherRecord->department,
+            'position' => $teacherRecord->position,
+            'classes' => $classes,
+            'stats' => [
+                'classes_count' => count($classes),
+            ],
+        ];
+
+        return [
+            'teacher' => $teacherContext,
+            'teacher_id' => $teacherRecord->id,
+        ];
+    }
+
+    /**
+     * Build admin context
+     * 
+     * @param User $user
+     * @return array
+     */
+    private function buildAdminContext(User $user): array
+    {
+        return [
+            'admin' => [
                 'id' => $user->id,
                 'name' => $user->name,
                 'email' => $user->email,
-            ];
+            ],
+        ];
+    }
+
+    /**
+     * Parse schedule_days (handles JSON string or array)
+     * 
+     * @param mixed $scheduleDays
+     * @return array
+     */
+    private function parseScheduleDays($scheduleDays): array
+    {
+        if (is_array($scheduleDays)) {
+            return $scheduleDays;
+        }
+        
+        if (is_string($scheduleDays)) {
+            $decoded = json_decode($scheduleDays, true);
+            return is_array($decoded) ? $decoded : [$scheduleDays];
         }
 
-            return $context;
-        });
+        return [];
+    }
+
+    /**
+     * Load recent excuse requests safely
+     * ✅ CORRECTED: Uses excuse_requests table
+     * 
+     * @param int $studentId
+     * @return array
+     */
+    private function loadRecentExcuseRequests(int $studentId): array
+    {
+        try {
+            // Check if ExcuseRequest model exists
+            if (!class_exists(\App\Models\ExcuseRequest::class)) {
+                return [];
+            }
+
+            // Load from excuse_requests table
+            return \App\Models\ExcuseRequest::where('student_id', $studentId)
+                ->select(['id', 'status', 'reason', 'submitted_at', 'attendance_session_id', 'created_at'])
+                ->orderBy('created_at', 'desc')
+                ->limit(5)
+                ->get()
+                ->map(fn($r) => [
+                    'id' => $r->id,
+                    'status' => $r->status,
+                    'reason' => is_string($r->reason) ? mb_substr($r->reason, 0, 100) : null,
+                    'submitted_at' => $r->submitted_at ?? $r->created_at,
+                    'attendance_session_id' => $r->attendance_session_id,
+                ])
+                ->toArray();
+
+        } catch (\Exception $e) {
+            Log::warning('Failed to load excuse requests: ' . $e->getMessage());
+            return [];
+        }
     }
 }

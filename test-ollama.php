@@ -1,8 +1,18 @@
 <?php
 
+
 require __DIR__.'/vendor/autoload.php';
 
 $app = require_once __DIR__.'/bootstrap/app.php';
+
+// Bootstrap the console kernel so the service container is fully initialized
+try {
+    $kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
+    $kernel->bootstrap();
+} catch (Throwable $e) {
+    echo "Failed to bootstrap application kernel: " . $e->getMessage() . "\n";
+    exit(1);
+}
 
 use App\Services\OllamaService;
 
@@ -10,7 +20,14 @@ echo "=== Testing Ollama Integration ===\n\n";
 
 // Test 1: Check if Ollama is available
 echo "1. Checking Ollama availability...\n";
-$ollama = new OllamaService();
+$ollama = null;
+try {
+    // Prefer a container-resolved instance to ensure dependencies are injected
+    $ollama = $app->make(App\Services\OllamaService::class);
+} catch (Exception $e) {
+    echo "Failed to create OllamaService from container: " . $e->getMessage() . "\n";
+    exit(1);
+}
 $available = $ollama->isAvailable();
 echo $available ? "✓ Ollama is running\n" : "✗ Ollama is not available\n";
 echo "\n";

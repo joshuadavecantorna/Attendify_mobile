@@ -92,14 +92,14 @@ class Student extends Model
     public function classes()
     {
         return $this->belongsToMany(ClassModel::class, 'class_student')
-                    ->withPivot(['is_active', 'enrolled_at', 'dropped_at'])
+                    ->withPivot(['status', 'enrolled_at'])
                     ->withTimestamps();
     }
 
     // Get active enrolled classes
     public function activeClasses()
     {
-        return $this->classes()->wherePivot('is_active', true);
+        return $this->classes()->wherePivot('status', 'enrolled');
     }
 
     // Generate QR code data

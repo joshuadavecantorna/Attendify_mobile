@@ -2,423 +2,291 @@
 
 namespace App\Http\Controllers;
 
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
+use Symfony\Component\HttpFoundation\StreamedResponse;
+use Inertia\Inertia;
+use Inertia\Response;
+use App\Services\UserContextBuilder;
+use App\Services\RetrievalPlanner;
+use App\Services\AIComposer;
 use App\Services\OllamaService;
 use App\Services\AIQueryService;
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
-use Carbon\Carbon;
 
 class ChatbotController extends Controller
 {
-    protected OllamaService $ollama;
-    protected AIQueryService $aiQuery;
+    protected UserContextBuilder $contextBuilder;
+    protected RetrievalPlanner $retrievalPlanner;
+    protected AIComposer $composer;
+    protected OllamaService $ollamaService;
+    protected AIQueryService $aiQueryService;
 
-    public function __construct(OllamaService $ollama, AIQueryService $aiQuery)
-    {
-        $this->ollama = $ollama;
-        $this->aiQuery = $aiQuery;
+    public function __construct(
+        UserContextBuilder $contextBuilder,
+        RetrievalPlanner $retrievalPlanner,
+        AIComposer $composer,
+        OllamaService $ollamaService,
+        AIQueryService $aiQueryService
+    ) {
+        $this->contextBuilder = $contextBuilder;
+        $this->retrievalPlanner = $retrievalPlanner;
+        $this->composer = $composer;
+        $this->ollamaService = $ollamaService;
+        $this->aiQueryService = $aiQueryService;
     }
 
     /**
-     * Handle chatbot queries about attendance
-     */
-    public function query(Request $request)
-    {
-        $request->validate([
-            'message' => 'required|string|max:500',
-            'conversation_history' => 'nullable|array'
-        ]);
-
-        $query = $request->input('message');
-        $history = $request->input('conversation_history', []);
-        
-        // Get current logged-in user info
-        $user = $request->user();
-        $userName = null;
-        $userRole = null;
-        
-        if ($user) {
-            $userName = $user->name;
-            $userRole = $user->role;
-            
-            // If asking about "my" or "I", replace with actual user name
-            $personalPronouns = ['my', 'me', 'i ', 'i\'m', 'i\'ve', 'i have'];
-            $queryLower = strtolower($query);
-            
-            foreach ($personalPronouns as $pronoun) {
-                if (strpos($queryLower, $pronoun) !== false) {
-                    $query = preg_replace('/\b(my|me|i|i\'m|i\'ve|i have)\b/i', $userName, $query);
-                    break;
-                }
-            }
-        }
-
-        // Check if Ollama is available
-        if (!$this->ollama->isAvailable()) {
-            return response()->json([
-                'success' => false,
-                'error' => 'AI service is currently unavailable. Please try again later.'
-            ], 503);
-        }
-
-        // Optionally extract structured query for debug
-        $extracted = $this->ollama->extractAttendanceQuery($query);
-        // Use AIQueryService to handle the query
-        $result = $this->aiQuery->handleQuery($query, $user);
-        
-        // Add user context to result
-        $result['current_user'] = $userName;
-        $result['user_role'] = $userRole;
-
-        // Format the response naturally
-        $response = $this->ollama->formatResponse($result, $query);
-
-        if (!$response) {
-            return response()->json([
-                'success' => false,
-                'error' => 'Failed to generate response. Please try again.'
-            ], 500);
-        }
-
-        return response()->json([
-            'success' => true,
-            'response' => $response,
-            'data' => $result,
-            'debug' => [
-                'extracted_query' => $extracted
-            ]
-        ]);
-    }
-
-    /**
-     * Execute database query based on extracted intent
-     */
-    protected function executeAttendanceQuery(array $extracted): array
-    {
-        $studentName = $extracted['student_name'] ?? null;
-        $queryType = $extracted['query_type'] ?? 'count_absences';
-        $status = $extracted['status'] ?? null;
-        $timePeriod = $extracted['time_period'] ?? 'this_month';
-
-        // Get date range based on time period
-        [$startDate, $endDate] = $this->getDateRange($timePeriod);
-
-        // Build base query
-        $query = DB::table('attendance_records')
-            ->join('students', 'attendance_records.student_id', '=', 'students.id');
-
-        // Filter by student name if provided
-        if ($studentName) {
-            $query->where('students.name', 'ILIKE', "%{$studentName}%");
-        }
-
-        // Filter by status if provided
-        if ($status) {
-            $query->where('attendance_records.status', $status);
-        }
-
-        // Filter by date range
-        if ($startDate) {
-            $query->whereDate('attendance_records.created_at', '>=', $startDate);
-        }
-        if ($endDate) {
-            $query->whereDate('attendance_records.created_at', '<=', $endDate);
-        }
-
-        // Execute appropriate query type
-        switch ($queryType) {
-            case 'count_absences':
-            case 'count_present':
-            case 'count_late':
-                $count = $query->count();
-                return [
-                    'type' => 'count',
-                    'count' => $count,
-                    'status' => $status ?? 'all',
-                    'student' => $studentName,
-                    'period' => $timePeriod,
-                    'start_date' => $startDate,
-                    'end_date' => $endDate
-                ];
-
-            case 'list_dates':
-                $dates = $query->select('attendance_records.created_at', 'attendance_records.status')
-                    ->orderBy('attendance_records.created_at', 'desc')
-                    ->limit(20)
-                    ->get();
-                
-                return [
-                    'type' => 'list',
-                    'records' => $dates,
-                    'count' => $dates->count(),
-                    'student' => $studentName,
-                    'period' => $timePeriod
-                ];
-
-            case 'attendance_rate':
-                $total = DB::table('attendance_records')
-                    ->join('students', 'attendance_records.student_id', '=', 'students.id')
-                    ->when($studentName, function($q) use ($studentName) {
-                        return $q->where('students.name', 'ILIKE', "%{$studentName}%");
-                    })
-                    ->whereDate('attendance_records.created_at', '>=', $startDate)
-                    ->whereDate('attendance_records.created_at', '<=', $endDate)
-                    ->count();
-
-                $present = DB::table('attendance_records')
-                    ->join('students', 'attendance_records.student_id', '=', 'students.id')
-                    ->when($studentName, function($q) use ($studentName) {
-                        return $q->where('students.name', 'ILIKE', "%{$studentName}%");
-                    })
-                    ->where('attendance_records.status', 'present')
-                    ->whereDate('attendance_records.created_at', '>=', $startDate)
-                    ->whereDate('attendance_records.created_at', '<=', $endDate)
-                    ->count();
-
-                $rate = $total > 0 ? round(($present / $total) * 100, 2) : 0;
-
-                return [
-                    'type' => 'rate',
-                    'total_records' => $total,
-                    'present_count' => $present,
-                    'attendance_rate' => $rate,
-                    'student' => $studentName,
-                    'period' => $timePeriod
-                ];
-
-            default:
-                return [
-                    'type' => 'unknown',
-                    'error' => 'Query type not supported'
-                ];
-        }
-    }
-
-    /**
-     * Get date range based on time period
-     */
-    protected function getDateRange(string $period): array
-    {
-        $now = Carbon::now();
-        
-        switch ($period) {
-            case 'today':
-                return [$now->toDateString(), $now->toDateString()];
-            
-            case 'this_week':
-                return [$now->startOfWeek()->toDateString(), $now->endOfWeek()->toDateString()];
-            
-            case 'this_month':
-                return [$now->startOfMonth()->toDateString(), $now->endOfMonth()->toDateString()];
-            
-            case 'last_month':
-                $lastMonth = $now->copy()->subMonth();
-                return [$lastMonth->startOfMonth()->toDateString(), $lastMonth->endOfMonth()->toDateString()];
-            
-            case 'this_year':
-                return [$now->startOfYear()->toDateString(), $now->endOfYear()->toDateString()];
-            
-            default:
-                // Default to this month
-                return [$now->startOfMonth()->toDateString(), $now->endOfMonth()->toDateString()];
-        }
-    }
-
-    /**
-     * Execute class-related queries
-     */
-    protected function executeClassQuery(array $extracted, $user): array
-    {
-        $queryType = $extracted['query_type'] ?? 'list_classes';
-        $className = $extracted['class_name'] ?? null;
-
-        switch ($queryType) {
-            case 'count_students_in_class':
-                if (!$user) {
-                    return [
-                        'type' => 'error',
-                        'message' => 'You need to be logged in to view class information.'
-                    ];
-                }
-
-                if (!$className) {
-                    return [
-                        'type' => 'error',
-                        'message' => 'Please specify which class you want to check.'
-                    ];
-                }
-
-                // For teachers, find the class and count enrolled students
-                if ($user->role === 'teacher') {
-                    $class = DB::table('class_models')
-                        ->where('teacher_id', $user->id)
-                        ->where('is_active', true)
-                        ->where(function($query) use ($className) {
-                            $query->whereRaw('LOWER(name) LIKE ?', ['%' . strtolower($className) . '%'])
-                                  ->orWhereRaw('LOWER(subject) LIKE ?', ['%' . strtolower($className) . '%']);
-                        })
-                        ->first();
-
-                    if (!$class) {
-                        return [
-                            'type' => 'error',
-                            'message' => "I couldn't find a class named '{$className}' in your teaching schedule."
-                        ];
-                    }
-
-                    // Count enrolled students in this class
-                    $studentCount = DB::table('class_student')
-                        ->where('class_id', $class->id)
-                        ->where('status', 'enrolled')
-                        ->count();
-
-                    return [
-                        'type' => 'student_count',
-                        'class_name' => $class->name,
-                        'student_count' => $studentCount
-                    ];
-                }
-
-                return [
-                    'type' => 'error',
-                    'message' => 'Only teachers can view student counts in classes.'
-                ];
-
-            case 'list_classes':
-                if (!$user) {
-                    return [
-                        'type' => 'error',
-                        'message' => 'You need to be logged in to view your classes.'
-                    ];
-                }
-
-                // Get enrolled classes based on user role
-                if ($user->role === 'student') {
-                    $classes = DB::table('student_class')
-                        ->join('classes', 'student_class.class_id', '=', 'classes.id')
-                        ->join('teachers', 'classes.teacher_id', '=', 'teachers.id')
-                        ->where('student_class.student_id', $user->id)
-                        ->select(
-                            'classes.name as class_name',
-                            'classes.subject',
-                            'classes.schedule',
-                            'teachers.name as teacher_name'
-                        )
-                        ->get();
-
-                    return [
-                        'type' => 'classes_list',
-                        'classes' => $classes->toArray(),
-                        'count' => $classes->count()
-                    ];
-                } elseif ($user->role === 'teacher') {
-                    $classes = DB::table('class_models')
-                        ->where('teacher_id', $user->id)
-                        ->where('is_active', true)
-                        ->select('name', 'subject', 'course', 'section', 'schedule_time', 'schedule_days')
-                        ->get();
-
-                    return [
-                        'type' => 'classes_list',
-                        'classes' => $classes->toArray(),
-                        'count' => $classes->count()
-                    ];
-                }
-
-                return [
-                    'type' => 'classes_list',
-                    'classes' => [],
-                    'count' => 0
-                ];
-
-            default:
-                return [
-                    'type' => 'unknown',
-                    'error' => 'Query type not supported'
-                ];
-        }
-    }
-
-    /**
-     * Execute general database queries using AI
-     */
-    protected function executeGeneralQuery(string $query, $user): array
-    {
-        // Get database schema information
-        $schema = $this->getDatabaseSchema();
-        
-        // Let AI generate SQL query based on the question and schema
-        $sqlQuery = $this->ollama->generateSQLQuery($query, $schema, $user);
-        
-        if (!$sqlQuery) {
-            return [
-                'type' => 'general',
-                'answer' => "I couldn't understand your question. Try asking about students, teachers, classes, or attendance."
-            ];
-        }
-
-        try {
-            // Execute the AI-generated query safely (read-only)
-            $results = DB::select($sqlQuery);
-            
-            return [
-                'type' => 'database_query',
-                'query' => $query,
-                'sql' => $sqlQuery,
-                'results' => $results,
-                'count' => count($results)
-            ];
-        } catch (\Exception $e) {
-            return [
-                'type' => 'error',
-                'message' => 'I had trouble finding that information. Try rephrasing your question.',
-                'error_detail' => $e->getMessage()
-            ];
-        }
-    }
-
-    /**
-     * Get database schema for AI context
-     */
-    protected function getDatabaseSchema(): array
-    {
-        return [
-            'students' => [
-                'description' => 'Student information',
-                'columns' => ['id', 'student_id', 'name', 'email', 'year', 'course', 'section', 'is_active']
-            ],
-            'teachers' => [
-                'description' => 'Teacher information',
-                'columns' => ['id', 'teacher_id', 'name', 'email', 'department', 'is_active']
-            ],
-            'classes' => [
-                'description' => 'Class/subject information',
-                'columns' => ['id', 'teacher_id', 'name', 'subject', 'section', 'schedule', 'room']
-            ],
-            'attendance_records' => [
-                'description' => 'Student attendance records',
-                'columns' => ['id', 'student_id', 'class_id', 'status', 'date', 'remarks', 'created_at']
-            ],
-            'student_class' => [
-                'description' => 'Student enrollment in classes',
-                'columns' => ['id', 'student_id', 'class_id', 'enrolled_at']
-            ]
-        ];
-    }
-
-    /**
-     * Check if AI service is available
+     * Return AI service health status.
      */
     public function status()
     {
-        $available = $this->ollama->isAvailable();
-        $models = $available ? $this->ollama->listModels() : null;
+        try {
+            $health = $this->ollamaService->healthCheck();
+            return response()->json(['ai' => $health], 200);
+        } catch (\Exception $e) {
+            Log::error('ChatbotController::status error', ['error' => $e->getMessage()]);
+            return response()->json(['ai' => ['ok' => false, 'error' => 'health check failed']], 503);
+        }
+    }
 
-        return response()->json([
-            'available' => $available,
-            'host' => config('ollama.host'),
-            'model' => config('ollama.model'),
-            'models' => $models
+    /**
+     * Display the chatbot view.
+     */
+    public function index(): Response
+    {
+        return Inertia::render('Chatbot/Index');
+    }
+
+    /**
+     * Handle a user query and return a standard response using the Hybrid AI pipeline.
+     */
+    public function queryRequest(Request $request)
+    {
+        $request->validate([
+            'message' => 'required|string|max:2000',
         ]);
+
+        $user = Auth::user();
+        if (!$user) {
+            return response()->json(['error' => 'Unauthenticated.'], 401);
+        }
+
+        $userQuery = $request->input('message');
+
+        try {
+            // 1. Static cached user context
+            $cachedContext = $this->contextBuilder->build($user->id);
+
+            // Validate access: ensure role-derived identifiers exist
+            if (($cachedContext['role'] ?? null) === 'student' && empty($cachedContext['student_id'])) {
+                return response()->json(['error' => 'Student context missing or access denied.'], 403);
+            }
+            if (($cachedContext['role'] ?? null) === 'teacher' && empty($cachedContext['teacher_id'])) {
+                return response()->json(['error' => 'Teacher context missing or access denied.'], 403);
+            }
+
+            // 2. Dynamic retrieval plan + results
+            $retrieval = $this->retrievalPlanner->planAndExecute($userQuery, $cachedContext);
+
+            // 3. Compose final prompt for the AI model
+            $prompt = $this->composer->compose($cachedContext, $retrieval, $userQuery);
+
+            // 4. Send to Ollama synchronously and return response
+            $resp = $this->ollamaService->generate($prompt, false);
+
+            // Normalize response to string
+            $output = null;
+            if (is_array($resp)) {
+                $parts = array_map(function ($p) {
+                    if (is_array($p) && isset($p['response'])) return $p['response'];
+                    if (is_string($p)) return $p;
+                    return json_encode($p);
+                }, $resp);
+                $output = implode('', $parts);
+            } elseif (is_string($resp)) {
+                $output = $resp;
+            } elseif (is_object($resp) && method_exists($resp, '__toString')) {
+                $output = (string) $resp;
+            } else {
+                $output = json_encode($resp);
+            }
+
+            // If the model returned raw JSON, code, or numeric sequences, prefer to render
+            // a friendly natural-language response using the retrieval results or by asking
+            // the model to rephrase into plain cheerful English.
+            $decoded = json_decode($output, true);
+            $looksStructured = (json_last_error() === JSON_ERROR_NONE && $decoded !== null);
+            // Detect outputs that are purely numeric sequences or simple JSON-like arrays/objects
+            $looksNumericSequence = preg_match('/^[0-9,\s\[\]\{\}\":]+$/', trim($output));
+            $containsCodeFence = (stripos($output, '```') !== false) || (strpos($output, '`') !== false && preg_match('/`[^`]+`/', $output));
+            $containsJsonLike = (strpos($output, '{') !== false && strpos($output, '}') !== false) || (strpos($output, '[') !== false && strpos($output, ']') !== false);
+
+            if ($looksStructured || $looksNumericSequence || $containsCodeFence || $containsJsonLike) {
+                // Map retrieval intent to a reasonable query type for formatting
+                $intent = $retrieval['intent'] ?? 'general';
+                switch ($intent) {
+                    case 'attendance':
+                        $qType = 'summary';
+                        break;
+                    case 'schedule':
+                        $qType = 'list_details';
+                        break;
+                    case 'teacher':
+                        $qType = 'list_details';
+                        break;
+                    case 'subjects':
+                        $qType = 'list_all';
+                        break;
+                    default:
+                        $qType = 'fallback';
+                        break;
+                }
+
+                try {
+                    $friendly = $this->ollamaService->formatResponse($intent, $qType, $retrieval['results'] ?? $decoded, $userQuery);
+                    if (!empty($friendly)) {
+                        $output = $friendly;
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Failed to format structured response: ' . $e->getMessage());
+                }
+            }
+
+            // If output still looks technical (contains backticks, JSON-like braces, or code fences), ask the model
+            // to rephrase into cheerful plain-language before returning to the user.
+            $stillLooksTechnical = (stripos($output, '```') !== false)
+                || preg_match('/\{\s*"[a-z0-9_]+"\s*:\s*/i', $output)
+                || preg_match('/^\s*\[\s*[0-9\s,]+\s*\]/', trim($output));
+
+            if ($stillLooksTechnical) {
+                try {
+                    $rewritten = $this->ollamaService->generateGenericResponse($userQuery, $output);
+                    if (!empty($rewritten)) {
+                        $output = $rewritten;
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Failed to rephrase technical output: ' . $e->getMessage());
+                }
+            }
+
+            return response()->json([
+                'reply' => $output,
+                'retrieval' => $retrieval['plan'] ?? null,
+            ]);
+        } catch (\Exception $e) {
+            Log::error('ChatbotController::queryRequest error', ['error' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
+            return response()->json(['error' => 'Internal server error'], 500);
+        }
+    }
+
+
+    /**
+     * Handle a user query and stream the response using the Hybrid AI pipeline.
+     */
+    public function streamChat(Request $request)
+    {
+        set_time_limit(120);
+
+        $request->validate(['query' => 'required|string|max:2000']);
+
+        $user = Auth::user();
+        if (!$user) {
+            return response()->json(['error' => 'Unauthenticated.'], 401);
+        }
+
+        $userQuery = $request->input('query');
+
+        try {
+            $cachedContext = $this->contextBuilder->build($user->id);
+
+            // Validate access before streaming
+            if (($cachedContext['role'] ?? null) === 'student' && empty($cachedContext['student_id'])) {
+                return new StreamedResponse(function () {
+                    echo json_encode(['error' => 'Student context missing or access denied.']);
+                });
+            }
+            if (($cachedContext['role'] ?? null) === 'teacher' && empty($cachedContext['teacher_id'])) {
+                return new StreamedResponse(function () {
+                    echo json_encode(['error' => 'Teacher context missing or access denied.']);
+                });
+            }
+
+            $retrieval = $this->retrievalPlanner->planAndExecute($userQuery, $cachedContext);
+            $prompt = $this->composer->compose($cachedContext, $retrieval, $userQuery);
+
+            $streamSource = $this->ollamaService->streamGenerate($prompt);
+            $generator = is_callable($streamSource) ? $streamSource() : $streamSource;
+
+            $response = new StreamedResponse(function () use ($generator) {
+                try {
+                    foreach ($generator as $chunk) {
+                        $out = is_string($chunk) ? $chunk : json_encode($chunk);
+                        echo $out;
+                        @ob_flush();
+                        @flush();
+                    }
+                } catch (\Throwable $e) {
+                    Log::error('ChatbotController::streamChat iteration error', ['error' => $e->getMessage()]);
+                    echo json_encode(['error' => 'Streaming failed.']);
+                }
+            });
+
+            $response->headers->set('Content-Type', 'text/event-stream');
+            $response->headers->set('Cache-Control', 'no-cache');
+            $response->headers->set('X-Accel-Buffering', 'no');
+
+            return $response;
+        } catch (\Exception $e) {
+            Log::error('ChatbotController::streamChat error', ['error' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
+            return new StreamedResponse(function () {
+                echo json_encode(['error' => 'Internal server error']);
+            });
+        }
+    }
+
+    private function sendStreamChunk(string $chunk)
+    {
+        echo "data: " . json_encode(['response' => $chunk]) . "\n\n";
+    }
+
+    private function executeParameterizedQuery(string $sql, array $bindings = []): array
+    {
+        $pdo = \Illuminate\Support\Facades\DB::getPdo();
+        try {
+            $stmt = $pdo->prepare($sql);
+
+            // PDO expects parameter array keys without leading colon
+            $params = [];
+            foreach ($bindings as $k => $v) {
+                $name = ltrim($k, ':');
+                $params[$name] = $v;
+            }
+
+            $stmt->execute($params);
+            $results = $stmt->fetchAll(\PDO::FETCH_OBJ);
+            return $results ?: [];
+        } catch (\Exception $e) {
+            Log::error('Query execution failed: ' . $e->getMessage(), ['sql' => $sql]);
+            return [];
+        }
+    }
+
+    private function _getUserContext(): array
+    {
+        $user = Auth::user();
+        $context = [
+            'user_id' => $user->id,
+            'user_name' => $user->name,
+            'user_role' => $user->role,
+        ];
+
+        if ($user->role === 'student' && $user->student) {
+            $context['student_id'] = $user->student->id;
+        } elseif ($user->role === 'teacher' && $user->teacher) {
+            $context['teacher_id'] = $user->teacher->id;
+        }
+
+        return $context;
     }
 }

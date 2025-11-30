@@ -7,6 +7,7 @@ use App\Http\Controllers\N8nApiController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
+
 /*
 |--------------------------------------------------------------------------
 | API Routes
@@ -35,7 +36,8 @@ Route::middleware('auth:sanctum')->group(function () {
 });
 
 // AI Chatbot routes (accessible to all, gets auth context when available)
-Route::post('/chatbot/query', [ChatbotController::class, 'query'])->middleware('web')->name('api.chatbot.query');
+Route::post('/chatbot/query', [ChatbotController::class, 'queryRequest'])->middleware('web')->name('api.chatbot.query');
+Route::post('/chatbot/stream', [ChatbotController::class, 'streamChat'])->middleware('web')->name('api.chatbot.stream');
 Route::get('/chatbot/status', [ChatbotController::class, 'status'])->middleware('web')->name('api.chatbot.status');
 
 // Telegram webhook (public, authenticated by secret token)

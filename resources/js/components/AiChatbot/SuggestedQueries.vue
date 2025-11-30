@@ -12,7 +12,7 @@ const userRole = computed(() => page.props.auth?.user?.role || 'student');
 
 const suggestions = computed<SuggestedQuery[]>(() => {
     const baseQueries: SuggestedQuery[] = [
-        { icon: '📊', text: "Today's attendance", query: 'How many students were absent today?' },
+        { icon: '📊', text: "Today's attendance", query: 'How many students were present today?' },
         { icon: '📅', text: 'Weekly summary', query: 'Show me attendance summary for this week' },
     ];
 
@@ -22,15 +22,17 @@ const suggestions = computed<SuggestedQuery[]>(() => {
             { icon: '📝', text: 'My absences', query: 'How many times have I been absent this month?' },
             { icon: '⏰', text: 'Late arrivals', query: 'How many times was I late this month?' },
             { icon: '📋', text: 'Excuse requests', query: 'Do I have any pending excuse requests?' },
+            { icon: '📚', text: 'My classes', query: 'List all my classes, subject, time, day, and room' },
         ];
     }
 
     if (userRole.value === 'teacher') {
         return [
             ...baseQueries,
-            { icon: '👥', text: 'Class attendance', query: 'How many students were absent today?' },
-            { icon: '⚠️', text: 'Student absences', query: 'How many times was [student name] absent this month?' },
-            { icon: '🔍', text: 'Attendance rate', query: "What is [student name]'s attendance rate?" },
+            { icon: '👥', text: 'Class attendance', query: 'How many students were present today?' },
+            { icon: '⚠️', text: 'Student excuse request', query: 'Do i have any pending excuse request?' },
+            { icon: '🔍', text: 'Attendance rate', query: "What is the attendance rate for all my classes?" },
+            { icon: '📚', text: 'List all classes', query: 'List all my classes, subject, time, day, and room' },
         ];
     }
 
@@ -41,6 +43,7 @@ const suggestions = computed<SuggestedQuery[]>(() => {
         { icon: '🏆', text: 'Best class', query: 'Which class has the best attendance?' },
         { icon: '📉', text: 'Most absences', query: 'Which class has the most absences?' },
         { icon: '📨', text: 'Excuse requests', query: 'Show me all pending excuse requests' },
+        { icon: '📚', text: 'List all classes', query: 'List all classes, subject, time, day, and room' },
     ];
 });
 

@@ -4,6 +4,7 @@
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Auth;
 use Inertia\Inertia;
+use App\Http\Controllers\ChatbotController;
 
 Route::get('/', function () {
     return Inertia::render('Welcome');
@@ -129,6 +130,10 @@ Route::middleware(['auth', 'verified'])->prefix('admin')->name('admin.')->group(
     Route::get('/reports', [App\Http\Controllers\AdminController::class, 'reports'])->name('reports');
     Route::post('/reports/export-pdf', [App\Http\Controllers\AdminController::class, 'exportReportPDF'])->name('reports.export-pdf');
     Route::post('/reports/email', [App\Http\Controllers\AdminController::class, 'emailReport'])->name('reports.email');
+
+    //Streaming AI chatbot routes
+    Route::post('/chatbot/query', [ChatbotController::class, 'queryRequest'])->name('chatbot.query');
+    Route::post('/chatbot/stream', [ChatbotController::class, 'streamChat'])->name('chatbot.stream');
 });
 
 require __DIR__.'/settings.php';

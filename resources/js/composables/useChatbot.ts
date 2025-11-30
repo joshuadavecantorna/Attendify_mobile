@@ -1,5 +1,5 @@
-import { reactive, ref, computed } from 'vue';
-import type { ChatMessage, ChatState, ChatResponse } from '@/types/chatbot';
+import { reactive, computed } from 'vue';
+import type { ChatMessage, ChatState } from '@/types/chatbot';
 import axios from 'axios';
 
 const state = reactive<ChatState>({
@@ -12,107 +12,79 @@ const state = reactive<ChatState>({
 export function useChatbot() {
     const generateId = () => `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-    const openChat = () => {
-        state.isOpen = true;
-        state.error = null;
-    };
-
-    const closeChat = () => {
-        state.isOpen = false;
-    };
-
-    const toggleChat = () => {
-        state.isOpen = !state.isOpen;
-    };
-
-    const addMessage = (role: 'user' | 'assistant', content: string) => {
+    const addMessage = (role: 'user' | 'assistant', content: string, isLoading = false) => {
         const message: ChatMessage = {
             id: generateId(),
             role,
             content,
             timestamp: new Date(),
+            isLoading,
         };
         state.messages.push(message);
         return message;
     };
 
-    const sendMessage = async (content: string) => {
-        if (!content.trim() || state.isLoading) return;
+    const sendMessage = async (message: string) => {
+        if (!message.trim() || state.isLoading) return;
 
-        // Add user message
-        addMessage('user', content);
+        addMessage('user', message);
         state.isLoading = true;
         state.error = null;
 
-        // Add temporary loading message
-        const loadingMessage: ChatMessage = {
-            id: generateId(),
-            role: 'assistant',
-            content: '',
-            timestamp: new Date(),
-            isLoading: true,
-        };
-        state.messages.push(loadingMessage);
+        const loadingMessage = addMessage('assistant', '', true);
 
         try {
-            // Build conversation history (last 10 messages for context)
             const conversationHistory = state.messages
                 .slice(-10)
-                .map(msg => ({
-                    role: msg.role,
-                    content: msg.content
-                }));
+                .map(m => ({ role: m.role, content: m.content }));
 
-            const response = await axios.post<ChatResponse>('/api/chatbot/query', {
-                message: content,
+            // The logic to differentiate between DB and streaming queries can be simplified
+            // For now, we will use the 'query' endpoint for all messages.
+            const response = await axios.post('/api/chatbot/query', {
+                message,
                 conversation_history: conversationHistory,
             }, {
-                headers: {
-                    'X-Requested-With': 'XMLHttpRequest',
-                },
-                withCredentials: true,
+                headers: { 'Content-Type': 'application/json' }
             });
 
-            // Remove loading message
-            const loadingIndex = state.messages.findIndex(m => m.id === loadingMessage.id);
-            if (loadingIndex !== -1) {
-                state.messages.splice(loadingIndex, 1);
-            }
+            const idx = state.messages.findIndex(m => m.id === loadingMessage.id);
+            if (idx !== -1) state.messages.splice(idx, 1);
 
-            // Add AI response
-            if (response.data.success) {
-                addMessage('assistant', response.data.response);
+            if (response.data.reply) {
+                addMessage('assistant', response.data.reply);
             } else {
-                throw new Error(response.data.error || 'Failed to get response');
-            }
-        } catch (error: any) {
-            // Remove loading message
-            const loadingIndex = state.messages.findIndex(m => m.id === loadingMessage.id);
-            if (loadingIndex !== -1) {
-                state.messages.splice(loadingIndex, 1);
+                const errMsg = response.data.error || 'Failed to get a response.';
+                state.error = errMsg;
+                addMessage('assistant', `Sorry, I encountered an error: ${errMsg}`);
             }
 
-            const errorMessage = error.response?.data?.error || error.message || 'Failed to send message. Please try again.';
-            state.error = errorMessage;
-            addMessage('assistant', `Sorry, I encountered an error: ${errorMessage}`);
+        } catch (err: any) {
+            const idx = state.messages.findIndex(m => m.id === loadingMessage.id);
+            if (idx !== -1) {
+                const errorMessage = err.response?.data?.reply || err.message || 'Failed to send message.';
+                state.messages[idx].content = `Sorry, I encountered an error: ${errorMessage}`;
+                state.messages[idx].isLoading = false;
+                state.error = errorMessage;
+            } else {
+                const errorMessage = err.response?.data?.reply || err.message || 'Failed to send message.';
+                addMessage('assistant', `Sorry, I encountered an error: ${errorMessage}`);
+                state.error = errorMessage;
+            }
         } finally {
             state.isLoading = false;
         }
     };
 
-    const clearHistory = () => {
-        state.messages = [];
-        state.error = null;
-    };
+    const openChat = () => { state.isOpen = true; state.error = null; };
+    const closeChat = () => { state.isOpen = false; };
+    const toggleChat = () => { state.isOpen = !state.isOpen; };
+    const clearHistory = () => { state.messages = []; state.error = null; };
 
     return {
-        // State (as refs)
         isOpen: computed(() => state.isOpen),
         messages: computed(() => state.messages),
         isLoading: computed(() => state.isLoading),
         error: computed(() => state.error),
-
-        // Actions
         openChat,
         closeChat,
         toggleChat,

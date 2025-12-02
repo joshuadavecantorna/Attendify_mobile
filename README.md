@@ -78,10 +78,14 @@ A Laravel-based application for attendance management.
 ## Run NGROK and update N8N after device restart
 
 1. Run in terminal:
+   ```bash
    ngrok http https://attendify_2.0.test --host-header=rewrite
+   ```
 
 2. Copy URL and update .env
 
 3. Update N8N URL in HTTP Request node:
-   Ex:  https://wedgier-earthlier-maliyah.ngrok-free.dev
+   ```bash
+   https://wedgier-earthlier-maliyah.ngrok-free.dev/api/n8n/schedules/today
+   ```
    Don't forget to add (/api/n8n/schedules/today) at the end of the URL

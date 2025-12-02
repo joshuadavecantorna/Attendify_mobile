@@ -25,3 +25,9 @@ yarn-error.log
 /.nova
 /.vscode
 /.zed
+
+# Ignore compiled Blade view files generated at runtime
+storage/framework/views/
+
+# Ignore Laravel log files
+storage/logs/*.log

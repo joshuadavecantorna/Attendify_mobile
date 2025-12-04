@@ -32,6 +32,7 @@ const suggestions = computed<SuggestedQuery[]>(() => {
             { icon: '👥', text: 'Class attendance', query: 'How many students were present today?' },
             { icon: '📚', text: 'Upcoming Classes', query: 'list all my upcoming classes for today' },
             { icon: '🔍', text: 'Attendance rate', query: "What is the attendance rate for all my classes?" },
+            { icon: '📋', text: 'Excuse requests', query: 'Do I have any pending excuse requests?' },
             { icon: '📚', text: 'List all classes', query: 'List all my classes, subject, time, day, and room' },
         ];
     }
@@ -43,7 +44,7 @@ const suggestions = computed<SuggestedQuery[]>(() => {
         { icon: '🏆', text: 'Best class', query: 'Which class has the best attendance?' },
         { icon: '📉', text: 'Most absences', query: 'Which class has the most absences?' },
         { icon: '📨', text: 'Excuse requests', query: 'Show me all pending excuse requests' },
-        { icon: '📚', text: 'List all classes', query: 'List all classes, subject, time, day, and room' },
+        { icon: '📚', text: 'List all classes', query: 'List all classes' },
     ];
 });
 

@@ -140,8 +140,7 @@ class AIQueryService
         if ($queryType === 'list_all' || $queryType === 'list_details') {
             $dbQuery = DB::table('class_models');
             if ($userContext['role'] === 'student' && isset($userContext['student_id'])) {
-                $pivotCol = Schema::hasColumn('class_student', 'class_id') ? 'class_id' : 'class_model_id';
-                $dbQuery->join('class_student', 'class_models.id', '=', "class_student.{$pivotCol}")
+                $dbQuery->join('class_student', 'class_models.id', '=', 'class_student.class_model_id')
                     ->where('class_student.student_id', $userContext['student_id']);
             } elseif ($userContext['role'] === 'teacher' && isset($userContext['teacher_id'])) {
                 $dbQuery->where('teacher_id', $userContext['teacher_id']);

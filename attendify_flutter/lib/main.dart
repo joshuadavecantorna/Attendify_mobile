@@ -91,20 +91,7 @@ class _AttendifyWebViewState extends State<AttendifyWebView> {
         return true;
       },
       child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Attendify'),
-          backgroundColor: Colors.blue,
-          foregroundColor: Colors.white,
-          actions: [
-            // Refresh button
-            IconButton(
-              icon: const Icon(Icons.refresh),
-              onPressed: () {
-                controller.reload();
-              },
-            ),
-          ],
-        ),
+        // App bar removed per request; full-screen webview.
         body: Stack(
           children: [
             // WebView

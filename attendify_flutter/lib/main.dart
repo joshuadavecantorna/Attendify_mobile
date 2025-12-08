@@ -37,7 +37,7 @@ class _AttendifyWebViewState extends State<AttendifyWebView> {
   @override
   void initState() {
     super.initState();
-    
+
     // Initialize WebView Controller
     controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
@@ -75,7 +75,8 @@ class _AttendifyWebViewState extends State<AttendifyWebView> {
         ),
       )
       // 👇 CHANGE THIS TO YOUR RAILWAY URL
-      ..loadRequest(Uri.parse('https://your-attendify-url.up.railway.app'));
+      ..loadRequest(
+          Uri.parse('https://attendify20-production.up.railway.app/'));
   }
 
   @override
@@ -108,7 +109,7 @@ class _AttendifyWebViewState extends State<AttendifyWebView> {
           children: [
             // WebView
             WebViewWidget(controller: controller),
-            
+
             // Loading indicator
             if (isLoading)
               const Center(

@@ -91,18 +91,20 @@ class _AttendifyWebViewState extends State<AttendifyWebView> {
         return true;
       },
       child: Scaffold(
-        // App bar removed per request; full-screen webview.
-        body: Stack(
-          children: [
-            // WebView
-            WebViewWidget(controller: controller),
+        // App bar removed per request; full-screen webview with SafeArea.
+        body: SafeArea(
+          child: Stack(
+            children: [
+              // WebView
+              WebViewWidget(controller: controller),
 
-            // Loading indicator
-            if (isLoading)
-              const Center(
-                child: CircularProgressIndicator(),
-              ),
-          ],
+              // Loading indicator
+              if (isLoading)
+                const Center(
+                  child: CircularProgressIndicator(),
+                ),
+            ],
+          ),
         ),
       ),
     );

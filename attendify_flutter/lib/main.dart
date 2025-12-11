@@ -94,13 +94,6 @@ class _AttendifyWebViewState extends State<AttendifyWebView> {
           controller.platform as AndroidWebViewController;
       androidController.setMediaPlaybackRequiresUserGesture(false);
 
-      // Grant camera permission to WebView
-      androidController.setOnShowFileChooser(
-        (controller, params) async {
-          return [];
-        },
-      );
-
       // Enable geolocation and other permissions
       androidController.setGeolocationPermissionsPromptCallbacks(
         onShowPrompt: (request) async {
@@ -111,12 +104,7 @@ class _AttendifyWebViewState extends State<AttendifyWebView> {
         },
       );
 
-      // Enable camera permission requests from web pages
-      androidController.setPermissionRequestCallback(
-        (request) async {
-          await request.grant();
-        },
-      );
+      // Camera permissions are handled by the app-level permission request
     }
   }
 

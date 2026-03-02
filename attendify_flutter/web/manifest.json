@@ -1,11 +1,11 @@
 {
-    "name": "attendify_flutter",
-    "short_name": "attendify_flutter",
+    "name": "AttendSynx",
+    "short_name": "AttendSynx",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "AttendSynx - Smart Attendance Management System",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

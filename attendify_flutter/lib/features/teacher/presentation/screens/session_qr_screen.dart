@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../bloc/teacher_bloc.dart';
 import '../../bloc/teacher_event.dart';
 import '../../bloc/teacher_state.dart';
 import '../../data/models/teacher_models.dart';
+import '../../../../core/services/supabase_service.dart';
 
 class SessionQRScreen extends StatefulWidget {
   final int sessionId;
@@ -16,11 +18,35 @@ class SessionQRScreen extends StatefulWidget {
 }
 
 class _SessionQRScreenState extends State<SessionQRScreen> {
+  RealtimeChannel? _sessionChannel;
+
   @override
   void initState() {
     super.initState();
-    // Load session details
     context.read<TeacherBloc>().add(const LoadAttendanceSessions());
+    _subscribeToSession();
+  }
+
+  void _subscribeToSession() {
+    _sessionChannel = SupabaseService.client
+        .channel('teacher-session-${widget.sessionId}')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'attendance_records',
+          callback: (payload) {
+            if (mounted) {
+              context.read<TeacherBloc>().add(const LoadAttendanceSessions());
+            }
+          },
+        )
+        .subscribe();
+  }
+
+  @override
+  void dispose() {
+    _sessionChannel?.unsubscribe();
+    super.dispose();
   }
 
   @override

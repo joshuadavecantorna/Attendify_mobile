@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
 import '../../bloc/student_bloc.dart';
 import '../../bloc/student_event.dart';
 import '../../bloc/student_state.dart';
 import '../../../auth/bloc/auth_bloc.dart';
 import '../../../auth/bloc/auth_state.dart';
+import '../../../../core/services/supabase_service.dart';
 import 'qr_scanner_screen.dart';
 import 'classes_screen.dart';
 import 'excuses_screen.dart';
@@ -19,10 +21,35 @@ class StudentDashboard extends StatefulWidget {
 }
 
 class _StudentDashboardState extends State<StudentDashboard> {
+  RealtimeChannel? _attendanceChannel;
+
   @override
   void initState() {
     super.initState();
     context.read<StudentBloc>().add(const LoadStudentDashboard());
+    _subscribeToAttendance();
+  }
+
+  void _subscribeToAttendance() {
+    _attendanceChannel = SupabaseService.client
+        .channel('student-dashboard-attendance')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'attendance_records',
+          callback: (payload) {
+            if (mounted) {
+              context.read<StudentBloc>().add(const LoadStudentDashboard());
+            }
+          },
+        )
+        .subscribe();
+  }
+
+  @override
+  void dispose() {
+    _attendanceChannel?.unsubscribe();
+    super.dispose();
   }
 
   @override

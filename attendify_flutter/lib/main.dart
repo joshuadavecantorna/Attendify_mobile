@@ -1,139 +1,143 @@
 import 'package:flutter/material.dart';
-import 'package:webview_flutter/webview_flutter.dart';
-import 'package:webview_flutter_android/webview_flutter_android.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:go_router/go_router.dart';
 
-void main() {
-  runApp(const AttendifyApp());
+import 'core/network/dio_client.dart';
+import 'core/services/connectivity_service.dart';
+import 'core/services/offline_service.dart';
+import 'core/theme/app_theme.dart';
+import 'core/router/app_router.dart';
+
+import 'features/auth/bloc/auth_bloc.dart';
+import 'features/auth/bloc/auth_event.dart';
+import 'features/auth/data/auth_repository.dart';
+
+import 'features/student/bloc/student_bloc.dart';
+import 'features/student/data/student_repository.dart';
+
+import 'features/teacher/bloc/teacher_bloc.dart';
+import 'features/teacher/data/teacher_repository.dart';
+
+import 'features/admin/bloc/admin_bloc.dart';
+import 'features/admin/data/admin_repository.dart';
+
+import 'features/chatbot/bloc/chat_bloc.dart';
+import 'features/chatbot/data/chat_repository.dart';
+import 'core/services/supabase_service.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await SupabaseService.initialize();
+  runApp(const AttendSynxApp());
 }
 
-class AttendifyApp extends StatelessWidget {
-  const AttendifyApp({super.key});
+class AttendSynxApp extends StatefulWidget {
+  const AttendSynxApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Attendify',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        primarySwatch: Colors.blue,
-        useMaterial3: true,
-      ),
-      home: const AttendifyWebView(),
-    );
-  }
+  State<AttendSynxApp> createState() => _AttendSynxAppState();
 }
 
-class AttendifyWebView extends StatefulWidget {
-  const AttendifyWebView({super.key});
+class _AttendSynxAppState extends State<AttendSynxApp> {
+  // ── Core services ────────────────────────────────────────────────────────────
+  final DioClient _dioClient = DioClient();
+  final ConnectivityService _connectivityService = ConnectivityService();
+  final OfflineService _offlineService = OfflineService();
 
-  @override
-  State<AttendifyWebView> createState() => _AttendifyWebViewState();
-}
+  // ── Repositories ─────────────────────────────────────────────────────────────
+  late final AuthRepository _authRepository;
+  late final StudentRepository _studentRepository;
+  late final TeacherRepository _teacherRepository;
+  late final AdminRepository _adminRepository;
+  late final ChatRepository _chatRepository;
 
-class _AttendifyWebViewState extends State<AttendifyWebView> {
-  late final WebViewController controller;
-  bool isLoading = true;
-  String currentUrl = '';
+  // ── BLoCs ────────────────────────────────────────────────────────────────────
+  late final AuthBloc _authBloc;
+  late final StudentBloc _studentBloc;
+  late final TeacherBloc _teacherBloc;
+  late final AdminBloc _adminBloc;
+  late final ChatBloc _chatBloc;
+
+  // ── Router ───────────────────────────────────────────────────────────────────
+  late final GoRouter _router;
 
   @override
   void initState() {
     super.initState();
-    _requestPermissions();
-    _initializeWebView();
+
+    // Repositories
+    _authRepository = AuthRepository(dioClient: _dioClient);
+    _studentRepository = StudentRepository(
+      dioClient: _dioClient,
+      offlineService: _offlineService,
+      connectivityService: _connectivityService,
+    );
+    _teacherRepository = TeacherRepository(
+      dioClient: _dioClient,
+      offlineService: _offlineService,
+      connectivityService: _connectivityService,
+    );
+    _adminRepository = AdminRepository(
+      dioClient: _dioClient,
+      offlineService: _offlineService,
+      connectivityService: _connectivityService,
+    );
+    _chatRepository = ChatRepository(
+      dioClient: _dioClient,
+      connectivityService: _connectivityService,
+    );
+
+    // BLoCs
+    _authBloc = AuthBloc(authRepository: _authRepository);
+    _studentBloc = StudentBloc(repository: _studentRepository);
+    _teacherBloc = TeacherBloc(teacherRepository: _teacherRepository);
+    _adminBloc = AdminBloc(adminRepository: _adminRepository);
+    _chatBloc = ChatBloc(chatRepository: _chatRepository);
+
+    // Router (reads AuthBloc state to drive redirect logic)
+    _router = AppRouter.createRouter(_authBloc);
+
+    // Wire 401 responses → navigate to login
+    DioClient.onUnauthorized = () => _router.go('/login');
+
+    // Kick off auth session check; splash screen also dispatches this
+    _authBloc.add(const AuthCheckRequested());
   }
 
-  Future<void> _requestPermissions() async {
-    // Request camera permission for QR scanning
-    await Permission.camera.request();
-  }
-
-  void _initializeWebView() {
-    // Initialize WebView Controller
-    controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(Colors.white)
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onProgress: (int progress) {
-            // Update loading progress
-            if (progress == 100) {
-              setState(() {
-                isLoading = false;
-              });
-            }
-          },
-          onPageStarted: (String url) {
-            setState(() {
-              isLoading = true;
-              currentUrl = url;
-            });
-          },
-          onPageFinished: (String url) {
-            setState(() {
-              isLoading = false;
-              currentUrl = url;
-            });
-          },
-          onWebResourceError: (WebResourceError error) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Error loading page: ${error.description}'),
-                backgroundColor: Colors.red,
-              ),
-            );
-          },
-        ),
-      )
-      ..loadRequest(
-          Uri.parse('https://attendify20-production.up.railway.app/'));
-
-    // Enable camera and media permissions for Android WebView
-    if (controller.platform is AndroidWebViewController) {
-      AndroidWebViewController androidController =
-          controller.platform as AndroidWebViewController;
-      androidController.setMediaPlaybackRequiresUserGesture(false);
-
-      // Enable geolocation and other permissions
-      androidController.setGeolocationPermissionsPromptCallbacks(
-        onShowPrompt: (request) async {
-          return GeolocationPermissionsResponse(
-            allow: true,
-            retain: true,
-          );
-        },
-      );
-
-      // Camera permissions are handled by the app-level permission request
-    }
+  @override
+  void dispose() {
+    _authBloc.close();
+    _studentBloc.close();
+    _teacherBloc.close();
+    _adminBloc.close();
+    _chatBloc.close();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return WillPopScope(
-      onWillPop: () async {
-        // Handle back button - go back in web history
-        if (await controller.canGoBack()) {
-          controller.goBack();
-          return false;
-        }
-        return true;
-      },
-      child: Scaffold(
-        // App bar removed per request; full-screen webview with SafeArea.
-        body: SafeArea(
-          child: Stack(
-            children: [
-              // WebView
-              WebViewWidget(controller: controller),
-
-              // Loading indicator
-              if (isLoading)
-                const Center(
-                  child: CircularProgressIndicator(),
-                ),
-            ],
-          ),
+    return MultiRepositoryProvider(
+      providers: [
+        RepositoryProvider.value(value: _authRepository),
+        RepositoryProvider.value(value: _studentRepository),
+        RepositoryProvider.value(value: _teacherRepository),
+        RepositoryProvider.value(value: _adminRepository),
+        RepositoryProvider.value(value: _chatRepository),
+      ],
+      child: MultiBlocProvider(
+        providers: [
+          BlocProvider.value(value: _authBloc),
+          BlocProvider.value(value: _studentBloc),
+          BlocProvider.value(value: _teacherBloc),
+          BlocProvider.value(value: _adminBloc),
+          BlocProvider.value(value: _chatBloc),
+        ],
+        child: MaterialApp.router(
+          title: 'AttendSynx',
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.lightTheme,
+          darkTheme: AppTheme.darkTheme,
+          routerConfig: _router,
         ),
       ),
     );

@@ -130,7 +130,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                       ),
                     ),
                     const Text(
-                      'Attendify Management',
+                      'AttendSynx Management',
                       style: TextStyle(
                         color: Colors.white,
                         fontSize: 24,

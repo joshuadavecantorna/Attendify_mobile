@@ -67,26 +67,20 @@ class _LoginScreenState extends State<LoginScreen> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       // Logo
-                      Container(
-                        width: 80,
-                        height: 80,
-                        decoration: BoxDecoration(
-                          gradient: const LinearGradient(
-                            colors: [Color(0xFF2563EB), Color(0xFF4F46E5)],
-                          ),
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: const Icon(
-                          Icons.check_circle_outline,
-                          size: 48,
-                          color: Colors.white,
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(16),
+                        child: Image.asset(
+                          'assets/images/logo.png',
+                          width: 80,
+                          height: 80,
+                          fit: BoxFit.contain,
                         ),
                       ),
                       const SizedBox(height: 24),
                       
                       // Title
                       const Text(
-                        'Welcome to Attendify',
+                        'Welcome to AttendSynx',
                         style: TextStyle(
                           fontSize: 28,
                           fontWeight: FontWeight.bold,

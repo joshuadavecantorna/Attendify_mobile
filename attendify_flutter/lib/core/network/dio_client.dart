@@ -4,6 +4,8 @@ import '../constants/app_constants.dart';
 
 /// Dio HTTP client with authentication interceptor
 class DioClient {
+  /// Set this callback to navigate to login on 401 (wired up in main.dart)
+  static void Function()? onUnauthorized;
   late final Dio _dio;
   final FlutterSecureStorage _storage = const FlutterSecureStorage();
 
@@ -38,7 +40,7 @@ class DioClient {
           if (error.response?.statusCode == 401) {
             await _storage.delete(key: AppConstants.authTokenKey);
             await _storage.delete(key: AppConstants.userDataKey);
-            // TODO: Navigate to login screen
+            DioClient.onUnauthorized?.call();
           }
           return handler.next(error);
         },

@@ -1,7 +1,7 @@
-/// Core constants for Attendify Flutter app
+/// Core constants for AttendSynx Flutter app
 class AppConstants {
   // API Configuration
-  static const String baseUrl = 'http://localhost:8000'; // Update for production
+  static const String baseUrl = 'https://attendsynx-jzyei.ondigitalocean.app';
   static const String apiPrefix = '/api';
   
   // API Endpoints

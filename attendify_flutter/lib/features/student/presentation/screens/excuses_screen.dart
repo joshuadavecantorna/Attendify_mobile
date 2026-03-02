@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../bloc/student_bloc.dart';
 import '../../bloc/student_event.dart';
 import '../../bloc/student_state.dart';
+import '../../../../core/services/supabase_service.dart';
 
 class ExcusesScreen extends StatefulWidget {
   const ExcusesScreen({super.key});
@@ -13,10 +15,35 @@ class ExcusesScreen extends StatefulWidget {
 }
 
 class _ExcusesScreenState extends State<ExcusesScreen> {
+  RealtimeChannel? _excuseChannel;
+
   @override
   void initState() {
     super.initState();
     context.read<StudentBloc>().add(const LoadExcuseRequests());
+    _subscribeToExcuses();
+  }
+
+  void _subscribeToExcuses() {
+    _excuseChannel = SupabaseService.client
+        .channel('student-excuses')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.update,
+          schema: 'public',
+          table: 'excuse_requests',
+          callback: (payload) {
+            if (mounted) {
+              context.read<StudentBloc>().add(const LoadExcuseRequests());
+            }
+          },
+        )
+        .subscribe();
+  }
+
+  @override
+  void dispose() {
+    _excuseChannel?.unsubscribe();
+    super.dispose();
   }
 
   @override

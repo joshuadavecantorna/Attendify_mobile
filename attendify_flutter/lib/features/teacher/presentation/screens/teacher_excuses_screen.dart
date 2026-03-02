@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../bloc/teacher_bloc.dart';
 import '../../bloc/teacher_event.dart';
 import '../../bloc/teacher_state.dart';
 import '../../data/models/teacher_models.dart';
+import '../../../../core/services/supabase_service.dart';
 
 class TeacherExcusesScreen extends StatefulWidget {
   const TeacherExcusesScreen({super.key});
@@ -16,16 +18,35 @@ class TeacherExcusesScreen extends StatefulWidget {
 class _TeacherExcusesScreenState extends State<TeacherExcusesScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
+  RealtimeChannel? _excuseChannel;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
     context.read<TeacherBloc>().add(const LoadPendingExcuses());
+    _subscribeToExcuses();
+  }
+
+  void _subscribeToExcuses() {
+    _excuseChannel = SupabaseService.client
+        .channel('teacher-excuses')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.insert,
+          schema: 'public',
+          table: 'excuse_requests',
+          callback: (payload) {
+            if (mounted) {
+              context.read<TeacherBloc>().add(const LoadPendingExcuses());
+            }
+          },
+        )
+        .subscribe();
   }
 
   @override
   void dispose() {
+    _excuseChannel?.unsubscribe();
     _tabController.dispose();
     super.dispose();
   }

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// App theme configuration for Attendify
+/// App theme configuration for AttendSynx
 class AppTheme {
   // Primary Colors (Blue-Indigo gradient theme from web version)
   static const Color primaryBlue = Color(0xFF2563EB); // Blue-600

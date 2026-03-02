@@ -10,11 +10,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:attendify_flutter/main.dart';
 
 void main() {
-  testWidgets('Attendify app smoke test', (WidgetTester tester) async {
+  testWidgets('AttendSynx app smoke test', (WidgetTester tester) async {
     // Build our app and trigger a frame.
-    await tester.pumpWidget(const AttendifyApp());
+    await tester.pumpWidget(const AttendSynxApp());
 
     // Verify the app loads
-    expect(find.byType(AttendifyApp), findsOneWidget);
+    expect(find.byType(AttendSynxApp), findsOneWidget);
   });
 }
